@@ -1,12 +1,11 @@
 from aiosqlite import Connection
 
-
 async def get_or_create_user(
     db: Connection,
     tg_id: int,
     username: str | None = None,
 ):
-    cursor = await db.execute(
+    async with db.execute(
         """
         INSERT INTO users (tg_id, username)
         VALUES (?, ?)
@@ -15,30 +14,26 @@ async def get_or_create_user(
         RETURNING id;
         """,
         (tg_id, username),
-    )
-    row = await cursor.fetchone()
-    await cursor.close()
-    print(f"User with tg_id {tg_id} has id {row['id']}")
+    ) as cursor:
+        row = await cursor.fetchone()
+    
     await db.commit()
+    print(f"User with tg_id {tg_id} has id {row['id']}")
     return row["id"]
 
-
 async def get_user_by_tg_id(db: Connection, tg_id: int):
-    cursor = await db.execute(
+    async with db.execute(
         "SELECT * FROM users WHERE tg_id = ?;",
         (tg_id,),
-    )
-    row = await cursor.fetchone()
-    await cursor.close()
-    return row
+    ) as cursor:
+        return await cursor.fetchone()
 
 async def get_tg_id_by_user_id(db: Connection, user_id: int):
-    cursor = await db.execute(
+    async with db.execute(
         "SELECT tg_id FROM users WHERE id = ?;",
         (user_id,),
-    )
-    row = await cursor.fetchone()
-    await cursor.close()
-    if row:
-        return row["tg_id"]
+    ) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return row["tg_id"]
     return None

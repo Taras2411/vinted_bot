@@ -10,8 +10,7 @@ async def add_item(
     brand: str | None,
     created_at: str | None,
 ):
-    # 1. Attempt the INSERT
-    row = None
+    # Пытаемся вставить новую запись
     async with db.execute(
         """
         INSERT INTO items (
@@ -25,19 +24,14 @@ async def add_item(
     ) as cursor:
         row = await cursor.fetchone()
     
-    # The cursor is now closed automatically. 
-    # We can now safely commit or start a new operation.
-
     if row:
         await db.commit()
         return row["id"]
 
-    # 2. If row was None (Conflict), fetch the existing ID
+    # Если запись уже была (ON CONFLICT сработал), получаем существующий id
     async with db.execute(
         "SELECT id FROM items WHERE vinted_id = ?;",
         (vinted_id,),
     ) as cursor:
         row = await cursor.fetchone()
-    
-    # Cursor is closed again here before returning
-    return row["id"] if row else None
+        return row["id"]

@@ -14,7 +14,6 @@ async def notifier_loop(db):
                 for item in unsent_items:
                     tg_id = await get_tg_id_by_user_id(db, search["user_id"])
                     await send_notification(tg_id, item["title"] + "\n" + item["url"])
-                    print(f"Sending notification for item {item['id']} in search {search['id']}")
                     await mark_item_as_sent(db, search["id"], item["id"])
             await asyncio.wait_for(shutdown_event.wait(), timeout=M * 60)
         except asyncio.TimeoutError:

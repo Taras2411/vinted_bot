@@ -5,7 +5,6 @@ async def link_item_to_search(
     search_id: int,
     item_id: int,
 ):
-    # Use context manager to ensure the cursor is closed after execution
     async with db.execute(
         """
         INSERT OR IGNORE INTO search_items (search_id, item_id)
@@ -13,11 +12,8 @@ async def link_item_to_search(
         """,
         (search_id, item_id),
     ) as cursor:
-        pass  # Execution happens here
-    
-    # Commit after the cursor (the statement) is closed
+        pass
     await db.commit()
-
 
 async def get_unsent_items_for_search(
     db: Connection,
@@ -33,12 +29,7 @@ async def get_unsent_items_for_search(
         """,
         (search_id,),
     ) as cursor:
-        # Fetch data while the cursor is open
-        rows = await cursor.fetchall()
-    
-    # Return data after the context manager has closed the cursor
-    return rows
-
+        return await cursor.fetchall()
 
 async def mark_item_as_sent(
     db: Connection,
@@ -56,6 +47,4 @@ async def mark_item_as_sent(
         (search_id, item_id),
     ) as cursor:
         pass
-
-    # Commit after the cursor is closed to avoid "SQL statements in progress"
     await db.commit()
