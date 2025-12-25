@@ -1,0 +1,45 @@
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+
+# --- Project data ---
+data/
+
+# --- VS Code ---
+.vscode/
+
+# --- Python cache / temp files ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- C extensions ---
+*.so
+
+# --- Distribution / packaging ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Pytest / coverage ---
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Logs ---
+*.log
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+
+# --- SQLite databases ---
+*.sqlite3
+*.db
+
+# --- dotenv ---
+.env
+.env.*
