@@ -1,0 +1,774 @@
+============================================================
+FILE: .\main.py
+============================================================
+
+from parser.parser_service import scheduler_loop
+from db import *
+from typing import Optional
+from db.repositories import *
+import asyncio
+from datetime import datetime
+from bot import start_bot
+from bot.notifier import notifier_loop, shutdown_event
+
+async def main():
+    await init_db()
+    print("Database initialized.")
+    db = await get_db()
+    try:
+        await asyncio.gather(
+            start_bot(db),
+            scheduler_loop(db),
+            notifier_loop(db),
+        )
+    finally:
+        shutdown_event.set()
+        await close_db()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+============================================================
+FILE: .\test.py
+============================================================
+
+# test how get_user_searches works with user_id from get_user_by_tg_id for tg_id 720318208. use connection for main db
+import asyncio
+from db import init_db, close_db, get_db
+from db.repositories import get_user_by_tg_id, get_user_searches
+async def test_get_user_searches():
+    await init_db()
+    db = await get_db()
+    try:
+        tg_id = 720318208
+        user = await get_user_by_tg_id(db, tg_id)
+        if user:
+            user_id = user['id']
+            searches = await get_user_searches(db, user_id)
+            searches_list = [dict(row) for row in searches]
+            print(f"Searches for user_id {user_id} (tg_id {tg_id}): {searches_list}")
+        else:
+            print(f"No user found with tg_id {tg_id}")
+    finally:
+        await close_db()
+
+if __name__ == "__main__":
+    asyncio.run(test_get_user_searches())
+
+============================================================
+FILE: .\bot\bot_logic.py
+============================================================
+
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import Message
+import asyncio
+from db import (get_db, close_db)
+
+from db.repositories import *
+from bot.config import BOT_TOKEN as TOKEN
+
+# Initialize bot and dispatcher
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+async def start_bot(db):
+    print("Starting bot...")
+    dp["db"] = db
+    await dp.start_polling(bot)
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.answer(
+        "Welcome to Vinted Bot! 🤖\n"
+        "Use /help to see available commands."
+    )
+    # add user to database
+    await get_or_create_user(dp["db"], message.from_user.id, message.from_user.username)
+
+
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer(
+        "/start - Start the bot\n"
+        "/help - Show this help message\n"
+        "/add_search <vinted_url> <title> - Add a new search\n"
+        "/remove_search <id> - Remove a search by ID\n"
+        "/list_searches - List all your searches"
+    )
+
+
+@dp.message(Command("add_search"))
+async def cmd_add_search(message: Message):
+    db = dp["db"]
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer("Usage: /add_search <vinted_url> <title>")
+        return
+    vinted_url = args[1]
+    title = args[2]
+    try:
+        user = await get_user_by_tg_id(db, message.from_user.id)
+        if not user:
+            await message.answer("You are not registered yet. Use /start to register.")
+            return
+        user_id = user['id']
+        search = await add_search(db, user_id, title, vinted_url)
+        await message.answer(f"✅ Search added with ID: {search['id']}")
+    except Exception as e:
+        await message.answer(f"❌ Error: {str(e)}")
+
+
+
+@dp.message(Command("remove_search"))
+async def cmd_remove_search(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Usage: /remove_search <id>")
+        return
+    
+    try:
+        search_id = int(args[1])
+        await remove_search(dp["db"], search_id)
+        await message.answer(f"✅ Search removed!")
+    except ValueError:
+        await message.answer("Invalid search ID")
+    except Exception as e:
+        await message.answer(f"❌ Error: {str(e)}")
+
+
+@dp.message(Command("list_searches"))
+async def cmd_list_searches(message: Message):
+    try:
+        user_id = await get_user_by_tg_id(dp["db"], message.from_user.id)
+        if not user_id:
+            await message.answer("You are not registered yet. Use /start to register.")
+            return
+        print("getting searches for user:", user_id['id'])
+        searches = await get_user_searches(dp["db"], user_id['id'])
+        if not searches:
+            await message.answer("No searches yet")
+            return
+        
+        response = "📋 Your searches:\n\n"
+        for search in searches:
+            response += f"ID: {search['id']} - {search['title']} - {search['vinted_url']}\n"
+        await message.answer(response)
+    except Exception as e:
+        await message.answer(f"❌ Error: {str(e)}")
+
+
+# send notification function
+async def send_notification(user_id: int, text: str):
+    try:
+        await bot.send_message(chat_id=user_id, text=text)
+    except Exception as e:
+        print(f"Failed to send message to {user_id}: {e}")
+
+============================================================
+FILE: .\bot\config.py
+============================================================
+
+BOT_TOKEN = "8389178046:AAFShTj0rOiuxc9bzSshYTdcm6PTgoiFmZg"
+PARSER_INTERVAL_MINUTES = 0.5
+NOTIFIER_INTERVAL_MINUTES = 0.5
+
+============================================================
+FILE: .\bot\notifier.py
+============================================================
+
+from db.repositories import *
+import asyncio
+from .bot_logic import *
+from .config import NOTIFIER_INTERVAL_MINUTES as M
+
+shutdown_event = asyncio.Event()
+
+async def notifier_loop(db):
+    while not shutdown_event.is_set():
+        try:
+            searches = await get_active_searches(db)
+            for search in searches:
+                unsent_items = await get_unsent_items_for_search(db, search["id"])
+                for item in unsent_items:
+                    tg_id = await get_tg_id_by_user_id(db, search["user_id"])
+                    await send_notification(tg_id, item["title"] + "\n" + item["url"])
+                    print(f"Sending notification for item {item['id']} in search {search['id']}")
+                    await mark_item_as_sent(db, search["id"], item["id"])
+            await asyncio.wait_for(shutdown_event.wait(), timeout=M * 60)
+        except asyncio.TimeoutError:
+            continue
+        except Exception as e:
+            print(f"Error in notifier_loop: {e}")
+            await asyncio.sleep(60)
+
+============================================================
+FILE: .\bot\__init__.py
+============================================================
+
+from .bot_logic import *
+from .config import *
+from .notifier import notifier_loop
+
+============================================================
+FILE: .\db\database.py
+============================================================
+
+import aiosqlite
+from pathlib import Path
+
+# путь до базы данных
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = BASE_DIR / "data" / "vinted.db"
+
+# глобальное соединение (одно на приложение)
+_db: aiosqlite.Connection | None = None
+
+
+async def get_db() -> aiosqlite.Connection:
+    """
+    Возвращает активное соединение с БД.
+    Создаёт его при первом вызове.
+    """
+    global _db
+
+    if _db is None:
+        _db = await aiosqlite.connect(DB_PATH)
+        await _db.execute("PRAGMA foreign_keys = ON;")
+        _db.row_factory = aiosqlite.Row
+
+    return _db
+
+
+async def init_db() -> None:
+    """
+    Инициализация базы данных:
+    - создаёт папку data/
+    - применяет schema.sql
+    """
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    db = await get_db()
+
+    schema_path = BASE_DIR / "db" / "schema.sql"
+    with open(schema_path, "r", encoding="utf-8") as f:
+        await db.executescript(f.read())
+
+    await db.commit()
+
+
+async def close_db() -> None:
+    """
+    Корректно закрывает соединение с БД
+    (вызывать при shutdown бота)
+    """
+    global _db
+
+    if _db is not None:
+        await _db.close()
+        _db = None
+
+if __name__ == "__main__":
+    import asyncio
+
+    async def main():
+        await init_db()
+        print("Database initialized.")
+        # stop code here
+        await close_db()
+
+    asyncio.run(main())
+
+============================================================
+FILE: .\db\__init__.py
+============================================================
+
+from .database import (
+    get_db,
+    init_db,
+    close_db,
+)
+
+
+============================================================
+FILE: .\db\repositories\items.py
+============================================================
+
+from aiosqlite import Connection
+
+
+async def add_item(
+    db: Connection,
+    vinted_id: int,
+    title: str,
+    price: int,
+    url: str,
+    image_url: str | None,
+    brand: str | None,
+    created_at: str | None,
+):
+    cursor = await db.execute(
+        """
+        INSERT INTO items (
+            vinted_id, title, price, url, image_url, brand, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(vinted_id) DO NOTHING
+        RETURNING id;
+        """,
+        (
+            vinted_id,
+            title,
+            price,
+            url,
+            image_url,
+            brand,
+            created_at,
+        ),
+    )
+    row = await cursor.fetchone()
+
+    if row:
+        await db.commit()
+        return row["id"]
+
+    cursor = await db.execute(
+        "SELECT id FROM items WHERE vinted_id = ?;",
+        (vinted_id,),
+    )
+    row = await cursor.fetchone()
+    return row["id"]
+
+
+============================================================
+FILE: .\db\repositories\searches.py
+============================================================
+
+from aiosqlite import Connection
+
+
+async def add_search(
+    db: Connection,
+    user_id: int,
+    title: str,
+    vinted_url: str,
+):
+    cursor = await db.execute(
+        """
+        INSERT INTO searches (user_id, title, vinted_url)
+        VALUES (?, ?, ?)
+        RETURNING *;
+        """,
+        (user_id, title, vinted_url),
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    await db.commit()
+    return row
+
+
+async def get_user_searches(db: Connection, user_id: int):
+    cursor = await db.execute(
+        """
+        SELECT * FROM searches
+        WHERE user_id = ? AND active = 1
+        ORDER BY created_at DESC;
+        """,
+        (user_id,),
+    )
+    rows = await cursor.fetchall()
+    await cursor.close()
+    return rows
+
+
+async def get_active_searches(db: Connection):
+    cursor = await db.execute(
+        """
+        SELECT * FROM searches
+        WHERE active = 1;
+        """
+    )
+    rows = await cursor.fetchall()
+    await cursor.close()
+    return rows
+
+
+async def deactivate_search(db: Connection, search_id: int):
+    cursor = await db.execute(
+        "UPDATE searches SET active = 0 WHERE id = ?;",
+        (search_id,),
+    )
+    await cursor.close()
+    await db.commit()
+
+async def activate_search(db: Connection, search_id: int):
+    cursor = await db.execute(
+        "UPDATE searches SET active = 1 WHERE id = ?;",
+        (search_id,),
+    )
+    await cursor.close()
+    await db.commit()
+
+async def remove_search(db: Connection, search_id: int):
+    cursor = await db.execute(
+        "DELETE FROM searches WHERE id = ?;",
+        (search_id,),
+    )
+    await cursor.close()
+    await db.commit()
+
+
+============================================================
+FILE: .\db\repositories\search_items.py
+============================================================
+
+from aiosqlite import Connection
+
+
+async def link_item_to_search(
+    db: Connection,
+    search_id: int,
+    item_id: int,
+):
+    await db.execute(
+        """
+        INSERT OR IGNORE INTO search_items (search_id, item_id)
+        VALUES (?, ?);
+        """,
+        (search_id, item_id),
+    )
+    await db.commit()
+
+
+async def get_unsent_items_for_search(
+    db: Connection,
+    search_id: int,
+):
+    cursor = await db.execute(
+        """
+        SELECT i.*
+        FROM items i
+        JOIN search_items si ON si.item_id = i.id
+        WHERE si.search_id = ?
+          AND si.sent = 0;
+        """,
+        (search_id,),
+    )
+    return await cursor.fetchall()
+
+
+async def mark_item_as_sent(
+    db: Connection,
+    search_id: int,
+    item_id: int,
+):
+    await db.execute(
+        """
+        UPDATE search_items
+        SET sent = 1,
+            sent_at = CURRENT_TIMESTAMP
+        WHERE search_id = ?
+          AND item_id = ?;
+        """,
+        (search_id, item_id),
+    )
+    await db.commit()
+
+
+============================================================
+FILE: .\db\repositories\users.py
+============================================================
+
+from aiosqlite import Connection
+
+
+async def get_or_create_user(
+    db: Connection,
+    tg_id: int,
+    username: str | None = None,
+):
+    cursor = await db.execute(
+        """
+        INSERT INTO users (tg_id, username)
+        VALUES (?, ?)
+        ON CONFLICT(tg_id) DO UPDATE SET
+            username = excluded.username
+        RETURNING id;
+        """,
+        (tg_id, username),
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    print(f"User with tg_id {tg_id} has id {row['id']}")
+    await db.commit()
+    return row["id"]
+
+
+async def get_user_by_tg_id(db: Connection, tg_id: int):
+    cursor = await db.execute(
+        "SELECT * FROM users WHERE tg_id = ?;",
+        (tg_id,),
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    return row
+
+async def get_tg_id_by_user_id(db: Connection, user_id: int):
+    cursor = await db.execute(
+        "SELECT tg_id FROM users WHERE id = ?;",
+        (user_id,),
+    )
+    row = await cursor.fetchone()
+    await cursor.close()
+    if row:
+        return row["tg_id"]
+    return None
+
+============================================================
+FILE: .\db\repositories\__init__.py
+============================================================
+
+from .users import *
+from .searches import *
+from .items import *
+from .search_items import *
+
+============================================================
+FILE: .\parser\parser.py
+============================================================
+
+from playwright.async_api import async_playwright
+from dataclasses import dataclass
+from typing import Optional
+import re
+import asyncio
+
+
+
+
+@dataclass
+class VintedItem:
+    """Class representing a Vinted item"""
+    url: str
+    parsed_title: Optional['titleParsed'] = None
+    brand_id: Optional[int] = None
+    image_src: Optional[str] = None
+    vinted_id: Optional[int] = None
+    
+    def __repr__(self) -> str:
+        return f"VintedItem(title='{self.title}')"
+    
+@dataclass
+class titleParsed:
+    """Class representing a parsed title"""
+    name: str
+    brand : Optional[str] = None
+    condition: Optional[str] = None
+    size: Optional[str] = None
+    price: Optional[str] = None
+
+def extract_vinted_id(href: str) -> Optional[int]:
+    """Extract Vinted ID from item href URL"""
+    if not href:
+        return None
+    match = re.search(r'/items/(\d+)', href)
+    return int(match.group(1)) if match else None
+
+
+def title_parser(title: str) -> titleParsed:
+    # example of unparsed title: Dětský Nike batoh nový, značka: Nike, stav: Nový s visačkou, velikost: Univerzální, 400,00 Kč, 438,00 Kč včetně Ochrany kupujících
+
+    
+    name = None
+    brand = None
+    condition = None
+    size = None
+    price = None
+    
+    # Extract prices with currency (handles decimal comma separator)
+    # Pattern: number,number currency (e.g., "400,00 Kč")
+    price_pattern = r'(\d+,\d+\s+\w+)'
+    prices = re.findall(price_pattern, title)
+    
+    # Get second price if available, otherwise first price
+    if len(prices) >= 2:
+        price = prices[1]
+    elif len(prices) == 1:
+        price = prices[0]
+    
+    # Remove prices from title for easier field extraction
+    title_without_prices = re.sub(price_pattern, '', title).strip()
+    
+    # Split by comma and process fields
+    parts = [part.strip() for part in title_without_prices.split(',')]
+    
+    # First part is the name
+    if parts:
+        name = parts[0]
+    
+    # Parse other fields
+    for part in parts[1:]:
+        if part.startswith('značka:'):
+            brand = part.replace('značka:', '').strip()
+        elif part.startswith('stav:'):
+            condition = part.replace('stav:', '').strip()
+        elif part.startswith('velikost:'):
+            size = part.replace('velikost:', '').strip()
+    
+    return titleParsed(
+        name=name or "",
+        brand=brand,
+        condition=condition,
+        size=size,
+        price=price
+    )
+    
+
+async def parse_vinted(URL: Optional[str] = None) -> list[VintedItem]:
+    # get brand id from URL
+    brand_id = re.search(r'brand_ids\[\]=(\d+)', URL)
+    brand_id_int = int(brand_id.group(1)) if brand_id else None
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled"
+            ]
+        )
+        context = await browser.new_context(
+            locale="cs-CZ",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        )
+        page = await context.new_page()
+
+        await page.goto(URL, wait_until="networkidle")
+
+        # Ждём, пока React отрисует карточки
+        await page.wait_for_selector(
+            ".feed-grid__item",
+            timeout=15000
+        )
+
+        items = await page.query_selector_all(
+            ".feed-grid__item"
+        )
+
+        print(f"Найдено элементов: {len(items)}")
+
+        # Parse items into VintedItem objects
+        vinted_items = []
+        for item in items:
+            # Find the overlay element within this feed-grid__item
+            overlay = await item.query_selector(".new-item-box__overlay.new-item-box__overlay--clickable")
+            if not overlay:
+                continue
+            
+            href = await overlay.get_attribute("href")
+            title = await overlay.get_attribute("title")
+            
+            # Find the image element within this feed-grid__item
+            image_elem = await item.query_selector("img.web_ui__Image__content")
+            image_src = await image_elem.get_attribute("src") if image_elem else None
+            
+            
+            parsedTitle = title_parser(title) if title else None
+            vinted_id = extract_vinted_id(href)
+            vinted_item = VintedItem(url=href, parsed_title=parsedTitle, brand_id=brand_id_int, image_src=image_src, vinted_id=vinted_id)
+            vinted_items.append(vinted_item)
+
+        await browser.close()
+        return vinted_items
+
+
+
+============================================================
+FILE: .\parser\parser_service.py
+============================================================
+
+import asyncio
+from aiosqlite import Connection
+import signal
+from typing import List
+from db import get_db
+from db.repositories import (
+    get_active_searches,
+    add_item,
+    link_item_to_search,
+    get_unsent_items_for_search,
+)
+from parser import parse_vinted  # твоя функция парсинга
+from bot.config import PARSER_INTERVAL_MINUTES as N
+# Флаг для остановки
+shutdown_event = asyncio.Event()
+
+
+async def process_search(search: dict):
+    """
+    Обработка одного поиска:
+    1) парсим Vinted
+    2) добавляем новые айтемы в БД
+    3) создаём связь search_items
+    """
+    db = await get_db()
+
+    try:
+        items = await parse_vinted(search["vinted_url"])
+    except Exception as e:
+        print(f"[ERROR] Ошибка парсинга {search['vinted_url']}: {e}")
+        return
+
+    for item in items:
+        # Добавляем в таблицу items
+        item_id = await add_item(
+            db,
+            vinted_id=item.vinted_id,
+            title=item.parsed_title.name if item.parsed_title else None,
+            price=item.parsed_title.price if item.parsed_title else None,
+            url=item.url,
+            image_url=item.image_src,
+            brand=item.parsed_title.brand if item.parsed_title else None,
+            created_at=None,
+        )
+
+        # Создаём связь с поиском
+        await link_item_to_search(db, search["id"], item_id)
+
+
+
+async def scheduler_loop(db: Connection):
+    """
+    Запускает основной цикл парсинга с заданным интервалом
+    """
+    while not shutdown_event.is_set():
+        try:
+            searches = await get_active_searches(db)
+            if not searches:
+                print("[INFO] Нет активных поисков.")
+            else:
+                print(f"[INFO] Найдено {len(searches)} активных поисков.")
+
+            # Асинхронно обрабатываем все поиски
+            await asyncio.gather(*(process_search(search) for search in searches))
+
+        except Exception as e:
+            print(f"[ERROR] Ошибка в основном цикле: {e}")
+
+        print(f"[INFO] Ожидание {N} минут до следующего цикла...")
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=N * 60)
+        except asyncio.TimeoutError:
+            continue  # Таймаут истек, продолжаем цикл
+
+============================================================
+FILE: .\parser\__init__.py
+============================================================
+
+from .parser import parse_vinted
+
+
