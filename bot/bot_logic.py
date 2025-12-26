@@ -119,11 +119,23 @@ async def cmd_list_searches(message: Message):
 
 
 # send notification function
+
 async def send_notification(user_id: int, text: str, image_url: str = None):
     try:
         if image_url:
-            await bot.send_photo(chat_id=user_id, photo=image_url, caption=text)
+            # Явно добавляем parse_mode=ParseMode.HTML
+            await bot.send_photo(
+                chat_id=user_id, 
+                photo=image_url, 
+                caption=text, 
+                parse_mode=ParseMode.HTML
+            )
         else:
-            await bot.send_message(chat_id=user_id, text=text)
+            # Явно добавляем parse_mode=ParseMode.HTML
+            await bot.send_message(
+                chat_id=user_id, 
+                text=text, 
+                parse_mode=ParseMode.HTML
+            )
     except Exception as e:
         print(f"Failed to send message to {user_id}: {e}")
