@@ -15,12 +15,20 @@ async def start_bot(db, shutdown_event):
     print("Starting bot...")
     dp["db"] = db
 
-    polling_task = asyncio.create_task(dp.start_polling(bot))
+    # FIX: handle_signals=False prevents aiogram from hijacking Ctrl+C
+    polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
 
     await shutdown_event.wait()
 
     print("Stopping bot...")
     polling_task.cancel()
+    
+    # Cleanly wait for the polling task to finish
+    try:
+        await polling_task
+    except asyncio.CancelledError:
+        pass
+        
     await bot.session.close()
 
 @dp.message(Command("start"))

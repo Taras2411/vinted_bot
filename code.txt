@@ -2,31 +2,73 @@
 FILE: .\main.py
 ============================================================
 
-from parser.parser_service import scheduler_loop
-from db import *
-from typing import Optional
-from db.repositories import *
 import asyncio
-from datetime import datetime
+import signal
+import sys
+
+from core.shutdown import shutdown_event
+from parser.parser_service import scheduler_loop
 from bot import start_bot
-from bot.notifier import notifier_loop, shutdown_event
+from bot.notifier import notifier_loop
+from db import init_db, close_db, get_db
+
+
+def request_shutdown():
+    if not shutdown_event.is_set():
+        print("Shutdown signal received")
+        shutdown_event.set()
+
+
+def setup_signal_handlers():
+    """
+    Кроссплатформенная установка обработчиков сигналов
+    """
+    try:
+        loop = asyncio.get_running_loop()
+
+        # Linux / macOS (systemd)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, request_shutdown)
+
+    except (NotImplementedError, RuntimeError):
+        # Windows fallback
+        signal.signal(signal.SIGINT, lambda s, f: request_shutdown())
+        signal.signal(signal.SIGTERM, lambda s, f: request_shutdown())
+
 
 async def main():
     await init_db()
     print("Database initialized.")
     db = await get_db()
+
+    setup_signal_handlers()
+
+    tasks = [
+        asyncio.create_task(start_bot(db, shutdown_event)),
+        asyncio.create_task(scheduler_loop(db, shutdown_event)),
+        asyncio.create_task(notifier_loop(db, shutdown_event)),
+    ]
+
     try:
-        await asyncio.gather(
-            start_bot(db),
-            scheduler_loop(db),
-            notifier_loop(db),
-        )
+        # ждём пока кто-то выставит shutdown_event
+        await shutdown_event.wait()
+
     finally:
-        shutdown_event.set()
+        print("Shutting down...")
+
+        for task in tasks:
+            task.cancel()
+
+        # корректно дожидаемся отмены
+        await asyncio.gather(*tasks, return_exceptions=True)
+
         await close_db()
+        print("Shutdown complete")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 ============================================================
 FILE: .\test.py
@@ -72,10 +114,17 @@ from bot.config import BOT_TOKEN as TOKEN
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-async def start_bot(db):
+async def start_bot(db, shutdown_event):
     print("Starting bot...")
     dp["db"] = db
-    await dp.start_polling(bot)
+
+    polling_task = asyncio.create_task(dp.start_polling(bot))
+
+    await shutdown_event.wait()
+
+    print("Stopping bot...")
+    polling_task.cancel()
+    await bot.session.close()
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -146,7 +195,6 @@ async def cmd_list_searches(message: Message):
         if not user_id:
             await message.answer("You are not registered yet. Use /start to register.")
             return
-        print("getting searches for user:", user_id['id'])
         searches = await get_user_searches(dp["db"], user_id['id'])
         if not searches:
             await message.answer("No searches yet")
@@ -174,10 +222,10 @@ async def send_notification(user_id: int, text: str, image_url: str = None):
 FILE: .\bot\config.py
 ============================================================
 
-BOT_TOKEN = "8389178046:AAGvUXZKVjf6mCdM3i2aQkQ3nXq1_mIO1Xw"
+BOT_TOKEN = "8048480100:AAFt2pxPpuxqlLJMlWkJBk8PlpHm7IOhH_4"
 PARSER_INTERVAL_MINUTES = 0.5
 NOTIFIER_INTERVAL_MINUTES = 0.5
-TELEGRAM_NOTIFICATIONS_INTRVAL_MS = 350
+TELEGRAM_NOTIFICATIONS_INTRVAL_MS = 1000
 
 ============================================================
 FILE: .\bot\notifier.py
@@ -189,9 +237,8 @@ from .bot_logic import *
 from .config import NOTIFIER_INTERVAL_MINUTES as M
 from .config import TELEGRAM_NOTIFICATIONS_INTRVAL_MS as T
 
-shutdown_event = asyncio.Event()
 
-async def notifier_loop(db):
+async def notifier_loop(db, shutdown_event: asyncio.Event):
     while not shutdown_event.is_set():
         try:
             searches = await get_active_searches(db)
@@ -232,6 +279,20 @@ FILE: .\bot\__init__.py
 from .bot_logic import *
 from .config import *
 from .notifier import notifier_loop
+
+============================================================
+FILE: .\core\shutdown.py
+============================================================
+
+import asyncio
+
+shutdown_event = asyncio.Event()
+
+============================================================
+FILE: .\core\__init__.py
+============================================================
+
+
 
 ============================================================
 FILE: .\db\database.py
@@ -500,7 +561,6 @@ async def get_or_create_user(
         row = await cursor.fetchone()
     
     await db.commit()
-    print(f"User with tg_id {tg_id} has id {row['id']}")
     return row["id"]
 
 async def get_user_by_tg_id(db: Connection, tg_id: int):
@@ -695,8 +755,7 @@ from db.repositories import (
 from parser.parser import parse_vinted  # Импортируем функцию парсинга
 from bot.config import PARSER_INTERVAL_MINUTES as N
 
-# Флаг для остановки (используется в main.py)
-shutdown_event = asyncio.Event()
+
 
 async def process_search(db: Connection, search: dict):
     """
@@ -735,7 +794,7 @@ async def process_search(db: Connection, search: dict):
     except Exception as e:
         print(f"[ERROR] Ошибка при обработке поиска {search['id']}: {e}")
 
-async def scheduler_loop(db: Connection):
+async def scheduler_loop(db: Connection, shutdown_event: asyncio.Event):
     """
     Запускает основной цикл парсинга с заданным интервалом
     """
