@@ -108,17 +108,18 @@ async def parse_vinted(URL: Optional[str] = None) -> list[VintedItem]:
 
         await page.goto(URL, wait_until="networkidle")
 
-        # Ждём, пока React отрисует карточки
+        # Ждём элементы, которые имеют основной класс, но НЕ имеют класса для полных строк
         await page.wait_for_selector(
-            ".feed-grid__item",
+            ".feed-grid__item:not(.feed-grid__item--full-row)",
             timeout=15000
         )
 
+        # Выбираем только нужные элементы
         items = await page.query_selector_all(
-            ".feed-grid__item"
+            ".feed-grid__item:not(.feed-grid__item--full-row)"
         )
 
-        print(f"Найдено элементов: {len(items)}")
+        print(f"Найдено элементов (исключая рекламные/полные строки): {len(items)}")
 
         # Parse items into VintedItem objects
         vinted_items = []
