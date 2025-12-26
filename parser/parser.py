@@ -99,6 +99,7 @@ async def parse_vinted(URL: Optional[str] = None) -> list[VintedItem]:
     # get brand id from URL
     brand_id = re.search(r'brand_ids\[\]=(\d+)', URL)
     brand_id_int = int(brand_id.group(1)) if brand_id else None
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
@@ -116,13 +117,27 @@ async def parse_vinted(URL: Optional[str] = None) -> list[VintedItem]:
         )
         page = await context.new_page()
 
-        await page.goto(URL, wait_until="networkidle")
+        # ИЗМЕНЕНИЕ 1: Увеличиваем таймаут и меняем стратегию ожидания
+        try:
+            await page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            print(f"[WARNING] Timeout or error during navigation: {e}")
+            await browser.close()
+            return []
 
-        # Ждём элементы, которые имеют основной класс, но НЕ имеют класса для полных строк
-        await page.wait_for_selector(
-            ".feed-grid__item:not(.feed-grid__item--full-row)",
-            timeout=15000
-        )
+        try:
+            # ИЗМЕНЕНИЕ 2: Ждём появления контента явно
+            # Vinted может показывать капчу или быть медленным, увеличим тут таймаут тоже
+            await page.wait_for_selector(
+                ".feed-grid__item:not(.feed-grid__item--full-row)",
+                timeout=30000 
+            )
+        except Exception:
+            # Если селектор не найден за 30 сек — скорее всего бан или пустая страница
+            print(f"[WARNING] Не удалось найти товары на странице (возможно, бан или пусто): {URL}")
+            # Можно сделать скриншот для отладки: await page.screenshot(path="debug_error.png")
+            await browser.close()
+            return []
 
         # Выбираем только нужные элементы
         items = await page.query_selector_all(
@@ -146,7 +161,6 @@ async def parse_vinted(URL: Optional[str] = None) -> list[VintedItem]:
             image_elem = await item.query_selector("img.web_ui__Image__content")
             image_src = await image_elem.get_attribute("src") if image_elem else None
             
-            
             parsedTitle = title_parser(title) if title else None
             vinted_id = extract_vinted_id(href)
             vinted_item = VintedItem(url=href, parsed_title=parsedTitle, brand_id=brand_id_int, image_src=image_src, vinted_id=vinted_id)
@@ -154,4 +168,3 @@ async def parse_vinted(URL: Optional[str] = None) -> list[VintedItem]:
 
         await browser.close()
         return vinted_items
-
