@@ -37,37 +37,47 @@ def extract_vinted_id(href: str) -> Optional[int]:
 
 
 def title_parser(title: str) -> titleParsed:
-    # example of unparsed title: Dětský Nike batoh nový, značka: Nike, stav: Nový s visačkou, velikost: Univerzální, 400,00 Kč, 438,00 Kč včetně Ochrany kupujících
-
-    
     name = None
     brand = None
     condition = None
     size = None
     price = None
     
-    # Extract prices with currency (handles decimal comma separator)
-    # Pattern: number,number currency (e.g., "400,00 Kč")
-    price_pattern = r'(\d+,\d+\s+\w+)'
+    # Улучшенный паттерн для цены:
+    # Ищет число, которое может содержать цифры, пробелы, точки или запятые,
+    # и заканчивается валютой (словом).
+    # Мы ищем последовательность, которая начинается с цифры и заканчивается валютой.
+    price_pattern = r'(\d[\d\s,.]*\s+\w+)'
+    
+    # Находим все совпадения
     prices = re.findall(price_pattern, title)
     
-    # Get second price if available, otherwise first price
+    # Очищаем найденные цены от лишних пробелов в конце
+    prices = [p.strip() for p in prices]
+    
+    # Логика выбора цены (вторая, если есть, иначе первая)
     if len(prices) >= 2:
         price = prices[1]
     elif len(prices) == 1:
         price = prices[0]
     
-    # Remove prices from title for easier field extraction
-    title_without_prices = re.sub(price_pattern, '', title).strip()
+    # Удаляем цены из заголовка для парсинга остальных полей
+    # Используем замену только конкретных найденных цен, чтобы не испортить структуру
+    title_without_prices = title
+    for p in prices:
+        title_without_prices = title_without_prices.replace(p, '')
     
-    # Split by comma and process fields
+    # Убираем лишние запятые, которые остались после удаления цен
+    title_without_prices = re.sub(r',\s*,', ',', title_without_prices).strip()
+    
+    # Разделяем по запятой
     parts = [part.strip() for part in title_without_prices.split(',')]
     
-    # First part is the name
+    # Первое поле — это название
     if parts:
         name = parts[0]
     
-    # Parse other fields
+    # Парсим остальные поля
     for part in parts[1:]:
         if part.startswith('značka:'):
             brand = part.replace('značka:', '').strip()
