@@ -161,9 +161,12 @@ async def cmd_list_searches(message: Message):
 
 
 # send notification function
-async def send_notification(user_id: int, text: str):
+async def send_notification(user_id: int, text: str, image_url: str = None):
     try:
-        await bot.send_message(chat_id=user_id, text=text)
+        if image_url:
+            await bot.send_photo(chat_id=user_id, photo=image_url, caption=text)
+        else:
+            await bot.send_message(chat_id=user_id, text=text)
     except Exception as e:
         print(f"Failed to send message to {user_id}: {e}")
 
@@ -171,9 +174,10 @@ async def send_notification(user_id: int, text: str):
 FILE: .\bot\config.py
 ============================================================
 
-BOT_TOKEN = "8389178046:AAFShTj0rOiuxc9bzSshYTdcm6PTgoiFmZg"
+BOT_TOKEN = "8389178046:AAGvUXZKVjf6mCdM3i2aQkQ3nXq1_mIO1Xw"
 PARSER_INTERVAL_MINUTES = 0.5
 NOTIFIER_INTERVAL_MINUTES = 0.5
+TELEGRAM_NOTIFICATIONS_INTRVAL_MS = 350
 
 ============================================================
 FILE: .\bot\notifier.py
@@ -183,6 +187,7 @@ from db.repositories import *
 import asyncio
 from .bot_logic import *
 from .config import NOTIFIER_INTERVAL_MINUTES as M
+from .config import TELEGRAM_NOTIFICATIONS_INTRVAL_MS as T
 
 shutdown_event = asyncio.Event()
 
@@ -190,19 +195,35 @@ async def notifier_loop(db):
     while not shutdown_event.is_set():
         try:
             searches = await get_active_searches(db)
+
             for search in searches:
                 unsent_items = await get_unsent_items_for_search(db, search["id"])
+
                 for item in unsent_items:
                     tg_id = await get_tg_id_by_user_id(db, search["user_id"])
-                    await send_notification(tg_id, item["title"] + "\n" + item["url"])
-                    print(f"Sending notification for item {item['id']} in search {search['id']}")
+
+                    await send_notification(
+                        tg_id,
+                        item["title"] + "\n" +
+                        item["price"] + "\n" +
+                        item["url"] + "\n" +
+                        item["brand"],
+                        item["image_url"]
+                    )
+
                     await mark_item_as_sent(db, search["id"], item["id"])
+
+                    # 🔴 ЗАДЕРЖКА МЕЖДУ СООБЩЕНИЯМИ
+                    await asyncio.sleep(T / 1000)
+
             await asyncio.wait_for(shutdown_event.wait(), timeout=M * 60)
+
         except asyncio.TimeoutError:
             continue
         except Exception as e:
             print(f"Error in notifier_loop: {e}")
             await asyncio.sleep(60)
+
 
 ============================================================
 FILE: .\bot\__init__.py
@@ -298,7 +319,6 @@ FILE: .\db\repositories\items.py
 
 from aiosqlite import Connection
 
-
 async def add_item(
     db: Connection,
     vinted_id: int,
@@ -309,7 +329,8 @@ async def add_item(
     brand: str | None,
     created_at: str | None,
 ):
-    cursor = await db.execute(
+    # Пытаемся вставить новую запись
+    async with db.execute(
         """
         INSERT INTO items (
             vinted_id, title, price, url, image_url, brand, created_at
@@ -318,29 +339,21 @@ async def add_item(
         ON CONFLICT(vinted_id) DO NOTHING
         RETURNING id;
         """,
-        (
-            vinted_id,
-            title,
-            price,
-            url,
-            image_url,
-            brand,
-            created_at,
-        ),
-    )
-    row = await cursor.fetchone()
-
+        (vinted_id, title, price, url, image_url, brand, created_at),
+    ) as cursor:
+        row = await cursor.fetchone()
+    
     if row:
         await db.commit()
         return row["id"]
 
-    cursor = await db.execute(
+    # Если запись уже была (ON CONFLICT сработал), получаем существующий id
+    async with db.execute(
         "SELECT id FROM items WHERE vinted_id = ?;",
         (vinted_id,),
-    )
-    row = await cursor.fetchone()
-    return row["id"]
-
+    ) as cursor:
+        row = await cursor.fetchone()
+        return row["id"]
 
 ============================================================
 FILE: .\db\repositories\searches.py
@@ -348,77 +361,65 @@ FILE: .\db\repositories\searches.py
 
 from aiosqlite import Connection
 
-
 async def add_search(
     db: Connection,
     user_id: int,
     title: str,
     vinted_url: str,
 ):
-    cursor = await db.execute(
+    async with db.execute(
         """
         INSERT INTO searches (user_id, title, vinted_url)
         VALUES (?, ?, ?)
         RETURNING *;
         """,
         (user_id, title, vinted_url),
-    )
-    row = await cursor.fetchone()
-    await cursor.close()
+    ) as cursor:
+        row = await cursor.fetchone()
+    
     await db.commit()
     return row
 
-
 async def get_user_searches(db: Connection, user_id: int):
-    cursor = await db.execute(
+    async with db.execute(
         """
         SELECT * FROM searches
         WHERE user_id = ? AND active = 1
         ORDER BY created_at DESC;
         """,
         (user_id,),
-    )
-    rows = await cursor.fetchall()
-    await cursor.close()
-    return rows
-
+    ) as cursor:
+        return await cursor.fetchall()
 
 async def get_active_searches(db: Connection):
-    cursor = await db.execute(
-        """
-        SELECT * FROM searches
-        WHERE active = 1;
-        """
-    )
-    rows = await cursor.fetchall()
-    await cursor.close()
-    return rows
-
+    async with db.execute(
+        "SELECT * FROM searches WHERE active = 1;"
+    ) as cursor:
+        return await cursor.fetchall()
 
 async def deactivate_search(db: Connection, search_id: int):
-    cursor = await db.execute(
+    async with db.execute(
         "UPDATE searches SET active = 0 WHERE id = ?;",
         (search_id,),
-    )
-    await cursor.close()
+    ) as cursor:
+        pass
     await db.commit()
 
 async def activate_search(db: Connection, search_id: int):
-    cursor = await db.execute(
+    async with db.execute(
         "UPDATE searches SET active = 1 WHERE id = ?;",
         (search_id,),
-    )
-    await cursor.close()
+    ) as cursor:
+        pass
     await db.commit()
 
 async def remove_search(db: Connection, search_id: int):
-    cursor = await db.execute(
+    async with db.execute(
         "DELETE FROM searches WHERE id = ?;",
         (search_id,),
-    )
-    await cursor.close()
+    ) as cursor:
+        pass
     await db.commit()
-
 
 ============================================================
 FILE: .\db\repositories\search_items.py
@@ -426,27 +427,26 @@ FILE: .\db\repositories\search_items.py
 
 from aiosqlite import Connection
 
-
 async def link_item_to_search(
     db: Connection,
     search_id: int,
     item_id: int,
 ):
-    await db.execute(
+    async with db.execute(
         """
         INSERT OR IGNORE INTO search_items (search_id, item_id)
         VALUES (?, ?);
         """,
         (search_id, item_id),
-    )
+    ) as cursor:
+        pass
     await db.commit()
-
 
 async def get_unsent_items_for_search(
     db: Connection,
     search_id: int,
 ):
-    cursor = await db.execute(
+    async with db.execute(
         """
         SELECT i.*
         FROM items i
@@ -455,16 +455,15 @@ async def get_unsent_items_for_search(
           AND si.sent = 0;
         """,
         (search_id,),
-    )
-    return await cursor.fetchall()
-
+    ) as cursor:
+        return await cursor.fetchall()
 
 async def mark_item_as_sent(
     db: Connection,
     search_id: int,
     item_id: int,
 ):
-    await db.execute(
+    async with db.execute(
         """
         UPDATE search_items
         SET sent = 1,
@@ -473,9 +472,9 @@ async def mark_item_as_sent(
           AND item_id = ?;
         """,
         (search_id, item_id),
-    )
+    ) as cursor:
+        pass
     await db.commit()
-
 
 ============================================================
 FILE: .\db\repositories\users.py
@@ -483,13 +482,12 @@ FILE: .\db\repositories\users.py
 
 from aiosqlite import Connection
 
-
 async def get_or_create_user(
     db: Connection,
     tg_id: int,
     username: str | None = None,
 ):
-    cursor = await db.execute(
+    async with db.execute(
         """
         INSERT INTO users (tg_id, username)
         VALUES (?, ?)
@@ -498,32 +496,28 @@ async def get_or_create_user(
         RETURNING id;
         """,
         (tg_id, username),
-    )
-    row = await cursor.fetchone()
-    await cursor.close()
-    print(f"User with tg_id {tg_id} has id {row['id']}")
+    ) as cursor:
+        row = await cursor.fetchone()
+    
     await db.commit()
+    print(f"User with tg_id {tg_id} has id {row['id']}")
     return row["id"]
 
-
 async def get_user_by_tg_id(db: Connection, tg_id: int):
-    cursor = await db.execute(
+    async with db.execute(
         "SELECT * FROM users WHERE tg_id = ?;",
         (tg_id,),
-    )
-    row = await cursor.fetchone()
-    await cursor.close()
-    return row
+    ) as cursor:
+        return await cursor.fetchone()
 
 async def get_tg_id_by_user_id(db: Connection, user_id: int):
-    cursor = await db.execute(
+    async with db.execute(
         "SELECT tg_id FROM users WHERE id = ?;",
         (user_id,),
-    )
-    row = await cursor.fetchone()
-    await cursor.close()
-    if row:
-        return row["tg_id"]
+    ) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return row["tg_id"]
     return None
 
 ============================================================
@@ -693,77 +687,93 @@ FILE: .\parser\parser_service.py
 
 import asyncio
 from aiosqlite import Connection
-import signal
-from typing import List
-from db import get_db
 from db.repositories import (
     get_active_searches,
     add_item,
     link_item_to_search,
-    get_unsent_items_for_search,
 )
-from parser import parse_vinted  # твоя функция парсинга
+from parser.parser import parse_vinted  # Импортируем функцию парсинга
 from bot.config import PARSER_INTERVAL_MINUTES as N
-# Флаг для остановки
+
+# Флаг для остановки (используется в main.py)
 shutdown_event = asyncio.Event()
 
-
-async def process_search(search: dict):
+async def process_search(db: Connection, search: dict):
     """
     Обработка одного поиска:
     1) парсим Vinted
     2) добавляем новые айтемы в БД
     3) создаём связь search_items
     """
-    db = await get_db()
-
     try:
+        print(f"[INFO] Начинаю парсинг для поиска ID {search['id']}: {search['title']}")
         items = await parse_vinted(search["vinted_url"])
+        
+        if not items:
+            print(f"[INFO] По поиску {search['id']} ничего не найдено.")
+            return
+
+        for item in items:
+            # Добавляем товар в таблицу items
+            # Функция add_item сама делает commit внутри (в исправленной версии репозитория)
+            item_id = await add_item(
+                db,
+                vinted_id=item.vinted_id,
+                title=item.parsed_title.name if item.parsed_title else None,
+                price=item.parsed_title.price if item.parsed_title else None,
+                url=item.url,
+                image_url=item.image_src,
+                brand=item.parsed_title.brand if item.parsed_title else None,
+                created_at=None,
+            )
+
+            # Создаём связь между поиском и товаром
+            await link_item_to_search(db, search["id"], item_id)
+            
+        print(f"[SUCCESS] Поиск ID {search['id']} обработан. Найдено товаров: {len(items)}")
+
     except Exception as e:
-        print(f"[ERROR] Ошибка парсинга {search['vinted_url']}: {e}")
-        return
-
-    for item in items:
-        # Добавляем в таблицу items
-        item_id = await add_item(
-            db,
-            vinted_id=item.vinted_id,
-            title=item.parsed_title.name if item.parsed_title else None,
-            price=item.parsed_title.price if item.parsed_title else None,
-            url=item.url,
-            image_url=item.image_src,
-            brand=item.parsed_title.brand if item.parsed_title else None,
-            created_at=None,
-        )
-
-        # Создаём связь с поиском
-        await link_item_to_search(db, search["id"], item_id)
-
-
+        print(f"[ERROR] Ошибка при обработке поиска {search['id']}: {e}")
 
 async def scheduler_loop(db: Connection):
     """
     Запускает основной цикл парсинга с заданным интервалом
     """
+    print(f"[INFO] Цикл парсинга запущен. Интервал: {N} мин.")
+    
     while not shutdown_event.is_set():
         try:
+            # Получаем актуальный список активных поисков
             searches = await get_active_searches(db)
+            
             if not searches:
-                print("[INFO] Нет активных поисков.")
+                print("[INFO] Активных поисков не обнаружено.")
             else:
-                print(f"[INFO] Найдено {len(searches)} активных поисков.")
-
-            # Асинхронно обрабатываем все поиски
-            await asyncio.gather(*(process_search(search) for search in searches))
+                print(f"[INFO] Найдено {len(searches)} активных поисков. Начинаю обработку...")
+                
+                # ВАЖНО: Обрабатываем поиски ПО ОЧЕРЕДИ (последовательно),
+                # чтобы избежать ошибки "SQL statements in progress" в SQLite.
+                for search in searches:
+                    if shutdown_event.is_set():
+                        break
+                    await process_search(db, search)
 
         except Exception as e:
-            print(f"[ERROR] Ошибка в основном цикле: {e}")
+            print(f"[ERROR] Критическая ошибка в основном цикле парсера: {e}")
 
-        print(f"[INFO] Ожидание {N} минут до следующего цикла...")
+        # Ожидание перед следующим кругом
+        print(f"[INFO] Цикл завершен. Ожидание {N} минут до следующего запуска...")
         try:
+            # Ждем либо установки события завершения, либо таймаута
             await asyncio.wait_for(shutdown_event.wait(), timeout=N * 60)
         except asyncio.TimeoutError:
-            continue  # Таймаут истек, продолжаем цикл
+            # Это нормальное поведение: таймаут вышел, продолжаем цикл
+            continue
+        except Exception as e:
+            print(f"[ERROR] Ошибка при ожидании в парсере: {e}")
+            await asyncio.sleep(10) # На случай странных ошибок
+
+    print("[INFO] Цикл парсинга остановлен.")
 
 ============================================================
 FILE: .\parser\__init__.py

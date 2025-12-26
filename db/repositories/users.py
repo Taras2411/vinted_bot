@@ -18,7 +18,6 @@ async def get_or_create_user(
         row = await cursor.fetchone()
     
     await db.commit()
-    print(f"User with tg_id {tg_id} has id {row['id']}")
     return row["id"]
 
 async def get_user_by_tg_id(db: Connection, tg_id: int):

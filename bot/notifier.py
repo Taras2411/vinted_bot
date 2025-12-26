@@ -4,9 +4,8 @@ from .bot_logic import *
 from .config import NOTIFIER_INTERVAL_MINUTES as M
 from .config import TELEGRAM_NOTIFICATIONS_INTRVAL_MS as T
 
-shutdown_event = asyncio.Event()
 
-async def notifier_loop(db):
+async def notifier_loop(db, shutdown_event: asyncio.Event):
     while not shutdown_event.is_set():
         try:
             searches = await get_active_searches(db)

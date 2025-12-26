@@ -11,10 +11,17 @@ from bot.config import BOT_TOKEN as TOKEN
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-async def start_bot(db):
+async def start_bot(db, shutdown_event):
     print("Starting bot...")
     dp["db"] = db
-    await dp.start_polling(bot)
+
+    polling_task = asyncio.create_task(dp.start_polling(bot))
+
+    await shutdown_event.wait()
+
+    print("Stopping bot...")
+    polling_task.cancel()
+    await bot.session.close()
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -85,7 +92,6 @@ async def cmd_list_searches(message: Message):
         if not user_id:
             await message.answer("You are not registered yet. Use /start to register.")
             return
-        print("getting searches for user:", user_id['id'])
         searches = await get_user_searches(dp["db"], user_id['id'])
         if not searches:
             await message.answer("No searches yet")

@@ -8,8 +8,7 @@ from db.repositories import (
 from parser.parser import parse_vinted  # Импортируем функцию парсинга
 from bot.config import PARSER_INTERVAL_MINUTES as N
 
-# Флаг для остановки (используется в main.py)
-shutdown_event = asyncio.Event()
+
 
 async def process_search(db: Connection, search: dict):
     """
@@ -48,7 +47,7 @@ async def process_search(db: Connection, search: dict):
     except Exception as e:
         print(f"[ERROR] Ошибка при обработке поиска {search['id']}: {e}")
 
-async def scheduler_loop(db: Connection):
+async def scheduler_loop(db: Connection, shutdown_event: asyncio.Event):
     """
     Запускает основной цикл парсинга с заданным интервалом
     """
