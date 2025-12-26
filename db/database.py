@@ -19,6 +19,7 @@ async def get_db() -> aiosqlite.Connection:
     if _db is None:
         _db = await aiosqlite.connect(DB_PATH)
         await _db.execute("PRAGMA foreign_keys = ON;")
+        await _db.execute("PRAGMA journal_mode=WAL;")
         _db.row_factory = aiosqlite.Row
 
     return _db
