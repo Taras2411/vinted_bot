@@ -46,15 +46,14 @@ async def cmd_start(message: Message):
     await get_or_create_user(dp["db"], message.from_user.id, message.from_user.username)
 
 
-
-
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
+    print("Help command invoked")
     await message.answer(
         "/start - Start the bot\n"
         "/help - Show this help message\n"
-        "/add_search <vinted_url> <title> - Add a new search\n"
-        "/remove_search <id> - Remove a search by ID\n"
+        "/add_search vinted_url title - Add a new search\n"
+        "/remove_search id - Remove a search by ID\n"
         "/list_searches - List all your searches"
     )
 
