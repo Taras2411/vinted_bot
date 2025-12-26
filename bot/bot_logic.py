@@ -1,6 +1,8 @@
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 import asyncio
 from db import (get_db, close_db)
 
@@ -8,7 +10,10 @@ from db.repositories import *
 from bot.config import BOT_TOKEN as TOKEN
 
 # Initialize bot and dispatcher
-bot = Bot(token=TOKEN)
+bot = Bot(
+    token=TOKEN, 
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
 
 async def start_bot(db, shutdown_event):
