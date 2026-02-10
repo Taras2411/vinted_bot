@@ -112,7 +112,15 @@ async def cmd_list_searches(message: Message):
         response = "📋 Your searches:\n\n"
         for search in searches:
             response += f"ID: {search['id']} - {search['title']} - {search['vinted_url']}\n"
-        await message.answer(response)
+        
+        # Split message if it exceeds Telegram's limit (4096 characters)
+        max_length = 4096
+        if len(response) <= max_length:
+            await message.answer(response)
+        else:
+            messages = [response[i:i+max_length] for i in range(0, len(response), max_length)]
+            for msg in messages:
+                await message.answer(msg)
     except Exception as e:
         await message.answer(f"❌ Error: {str(e)}")
 
