@@ -44,7 +44,18 @@ Clone the repository:
   
     git clone https://github.com/Taras2411/vinted_bot
     cd vinted_bot
-    
+
+Create venv:
+
+    python -m venv nev
+
+Activate venv:
+Linux / macOS
+
+    source venv/bin/activate
+Windows (PowerShell)
+
+    .\venv\Scripts\Activate.ps1
 
 Install dependencies:
 
@@ -69,6 +80,7 @@ Open bot/config.py and update the settings:
 Database Setup
 
 The bot uses SQLite. On the first launch, it will automatically create a data/vinted.db file and initialize the schema using db/schema.sql.
+
 🎮 Usage
 
 Run the bot:
