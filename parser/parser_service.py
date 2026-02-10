@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections import defaultdict
 from aiosqlite import Connection
 from db.repositories import (
     get_active_searches,
@@ -16,24 +17,31 @@ browser_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PARSERS)
 # Блокировка для базы данных (предотвращает "SQL statements in progress")
 db_lock = asyncio.Lock()
 
-async def process_search(db: Connection, search: dict):
+async def process_url_group(db: Connection, url: str, search_ids: list[int]):
+    """
+    Обрабатывает один URL.
+    1. Парсит данные (один раз).
+    2. Добавляет товары в БД.
+    3. Привязывает найденные товары ко всем search_id, которые ждут этот URL.
+    """
     start_time = time.perf_counter()
-    search_id = search['id']
     
     try:
-        # 1. ПАРАЛЛЕЛЬНЫЙ ПАРСИНГ
+        # 1. ПАРАЛЛЕЛЬНЫЙ ПАРСИНГ (под семафором)
         async with browser_semaphore:
-            print(f"[INFO] Начинаю парсинг: {search['title']} (ID {search_id})")
-            items = await parse_vinted(search["vinted_url"])
+            print(f"[INFO] Начинаю парсинг URL: {url} (для {len(search_ids)} поисков)")
+            items = await parse_vinted(url)
         
         if not items:
-            print(f"[INFO] Ничего не найдено для ID {search_id}")
+            print(f"[INFO] Ничего не найдено для URL: {url}")
             return
 
         # 2. ПОСЛЕДОВАТЕЛЬНАЯ ЗАПИСЬ В БД (под защитой Lock)
         async with db_lock:
+            # Сначала добавляем товары в таблицу items и собираем их ID
+            added_item_ids = []
+            
             for item in items:
-                # ВАЖНО: В обновленных репозиториях commit убран для скорости
                 item_id = await add_item(
                     db,
                     vinted_id=item.vinted_id,
@@ -44,16 +52,21 @@ async def process_search(db: Connection, search: dict):
                     brand=item.parsed_title.brand if item.parsed_title else None,
                     created_at=None,
                 )
-                await link_item_to_search(db, search_id, item_id)
+                added_item_ids.append(item_id)
             
-            # Один коммит на весь список товаров — это ОЧЕНЬ быстро
+            # Теперь связываем эти товары с каждым search_id из группы
+            for search_id in search_ids:
+                for item_id in added_item_ids:
+                    await link_item_to_search(db, search_id, item_id)
+            
+            # Фиксируем изменения
             await db.commit()
             
         execution_time = time.perf_counter() - start_time
-        print(f"[SUCCESS] Поиск ID {search_id} обработан. Найдено: {len(items)}. Время: {execution_time:.2f}с")
+        print(f"[SUCCESS] URL обработан. Найдено: {len(items)} товаров. Распределено по {len(search_ids)} поискам. Время: {execution_time:.2f}с")
 
     except Exception as e:
-        print(f"[ERROR] Ошибка в поиске {search_id}: {e}")
+        print(f"[ERROR] Ошибка при обработке URL {url}: {e}")
 
 async def scheduler_loop(db: Connection, shutdown_event: asyncio.Event):
     print(f"[INFO] Цикл парсинга запущен. Интервал: {N} мин.")
@@ -65,9 +78,20 @@ async def scheduler_loop(db: Connection, shutdown_event: asyncio.Event):
             if not searches:
                 print("[INFO] Активных поисков нет.")
             else:
-                print(f"[INFO] Запускаю {len(searches)} поисков...")
-                # Запускаем все поиски параллельно
-                tasks = [process_search(db, search) for search in searches]
+                # Группировка поисков по URL
+                # url_groups = { "https://vinted...": [id1, id2, id5], ... }
+                url_groups = defaultdict(list)
+                for search in searches:
+                    url_groups[search["vinted_url"]].append(search["id"])
+                
+                print(f"[INFO] Запускаю {len(url_groups)} задач парсинга (всего поисков: {len(searches)})...")
+                
+                # Создаем задачи для каждой уникальной ссылки
+                tasks = [
+                    process_url_group(db, url, ids) 
+                    for url, ids in url_groups.items()
+                ]
+                
                 await asyncio.gather(*tasks)
 
         except Exception as e:
