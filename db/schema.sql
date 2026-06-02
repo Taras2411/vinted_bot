@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     vinted_id INTEGER NOT NULL,
     title TEXT,
-    price TEXT,
+    price TEXT,                    -- 🔹 оригинальная цена с валютой ("12,00 €")
+    price_amount REAL,             -- 🔹 числовое значение цены
+    currency TEXT,                 -- 🔹 ISO код валюты сайта (CZK, EUR, ...)
     url TEXT,
     image_url TEXT,                -- 🔹 ссылка на картинку
     brand TEXT,

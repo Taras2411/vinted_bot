@@ -8,6 +8,13 @@ from db import (get_db, close_db)
 
 from db.repositories import *
 from bot.config import BOT_TOKEN as TOKEN
+from parser.regions import (
+    GROUP_REPRESENTATIVES,
+    group_of,
+    param_signature,
+    make_region_twin,
+)
+from parser.locales import resolve as resolve_locale
 
 # Initialize bot and dispatcher
 bot = Bot(
@@ -53,8 +60,11 @@ async def cmd_help(message: Message):
         "/start - Start the bot\n"
         "/help - Show this help message\n"
         "/add_search vinted_url title - Add a new search\n"
+        "/auto_region [search_id] - Mirror existing search(es) across both region groups\n"
         "/remove_search id - Remove a search by ID\n"
-        "/list_searches - List all your searches"
+        "/list_searches - List all your searches\n"
+        "\n"
+        "auto_region scope: default (fr+cz), 1 (western group), 2 (eastern group), all"
     )
 
 
@@ -78,6 +88,81 @@ async def cmd_add_search(message: Message):
     except Exception as e:
         await message.answer(f"❌ Error: {str(e)}")
 
+
+
+@dp.message(Command("auto_region"))
+async def cmd_auto_region(message: Message):
+    """Ensure existing searches are mirrored across both Vinted region groups.
+
+    Each unique search (combination of filters) needs at most two copies: one
+    anywhere in the "fr group" and one anywhere in the "cz group". For every
+    target search we create the missing group's copy (using fr / cz as the
+    representative domain) and skip a group that already has the search in any
+    of its domains.
+
+    Usage: /auto_region [search_id]
+      search_id (optional): mirror only that search; omit to mirror all of yours.
+    """
+    db = dp["db"]
+
+    # Optional numeric search id.
+    search_id = None
+    for tok in message.text.split()[1:]:
+        if tok.isdigit():
+            search_id = int(tok)
+        else:
+            await message.answer("Usage: /auto_region [search_id]")
+            return
+
+    try:
+        user = await get_user_by_tg_id(db, message.from_user.id)
+        if not user:
+            await message.answer("You are not registered yet. Use /start to register.")
+            return
+        user_id = user['id']
+
+        searches = await get_user_searches(db, user_id)
+        if search_id is not None:
+            targets = [s for s in searches if s['id'] == search_id]
+            if not targets:
+                await message.answer(f"❌ No active search with ID {search_id}.")
+                return
+        else:
+            targets = list(searches)
+            if not targets:
+                await message.answer("You have no active searches yet. Use /add_search first.")
+                return
+
+        # (group index, filter signature) already covered by an existing search.
+        # Any domain inside a group counts as covering that group.
+        covered = set()
+        for s in searches:
+            g = group_of(resolve_locale(s['vinted_url']).domain)
+            if g is not None:
+                covered.add((g, param_signature(s['vinted_url'])))
+
+        added = []
+        for s in targets:
+            sig = param_signature(s['vinted_url'])
+            base_title = s['title'] or "search"
+            for group_index, rep_domain in enumerate(GROUP_REPRESENTATIVES):
+                if (group_index, sig) in covered:
+                    continue
+                twin = await make_region_twin(s['vinted_url'], rep_domain)
+                if twin is None:
+                    continue
+                covered.add((group_index, sig))
+                new = await add_search(db, user_id, f"{base_title} [{rep_domain}]", twin)
+                added.append((rep_domain, new['id']))
+
+        if not added:
+            await message.answer("Nothing to add — every search already covers both region groups.")
+            return
+
+        lines = "\n".join(f"  • {domain} (ID {sid})" for domain, sid in added)
+        await message.answer(f"✅ Added {len(added)} region searches:\n{lines}")
+    except Exception as e:
+        await message.answer(f"❌ Error: {str(e)}")
 
 
 @dp.message(Command("remove_search"))

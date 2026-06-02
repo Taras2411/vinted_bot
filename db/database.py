@@ -39,7 +39,24 @@ async def init_db() -> None:
     with open(schema_path, "r", encoding="utf-8") as f:
         await db.executescript(f.read())
 
+    await _migrate(db)
+
     await db.commit()
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """
+    Lightweight migrations for databases created before a column existed.
+    CREATE TABLE IF NOT EXISTS does not add columns to an existing table,
+    so we add them here when missing.
+    """
+    async with db.execute("PRAGMA table_info(items);") as cursor:
+        columns = {row["name"] for row in await cursor.fetchall()}
+
+    if "price_amount" not in columns:
+        await db.execute("ALTER TABLE items ADD COLUMN price_amount REAL;")
+    if "currency" not in columns:
+        await db.execute("ALTER TABLE items ADD COLUMN currency TEXT;")
 
 
 async def close_db() -> None:

@@ -23,6 +23,10 @@ An advanced, asynchronous Telegram bot designed to monitor Vinted listings in re
 
     Smart Filtering: Parses titles, prices, brands, and images from Vinted items.
 
+    Multi-location Support: Works with any Vinted country site (vinted.cz, vinted.de, vinted.fr, vinted.co.uk, vinted.pl, vinted.com, ...). The locale, language labels, and currency are detected automatically from each search URL's domain (see parser/locales.py).
+
+    Currency Conversion: Prices from any site are automatically converted to CZK in notifications using the free Frankfurter (ECB) exchange-rate API, with in-memory rate caching.
+
     Multi-user Support: Users can manage their own list of search queries via Telegram commands.
 
     Graceful Shutdown: Handles SIGINT and SIGTERM signals for safe database closure and task cancellation.
@@ -95,6 +99,17 @@ Telegram Commands
 
     /add_search <vinted_url> <title> - Add a new Vinted search URL to monitor.
 
+    /auto_region [search_id] - Mirror existing search(es) so each one is covered
+        in both Vinted region groups. With a search_id only that search is
+        mirrored; omit it to process all of your active searches. Each unique
+        search needs at most two copies: one anywhere in the fr group (fr, es,
+        it, pt, nl, be, lu, de, at) and one anywhere in the cz group (pl, lt,
+        cz, sk, se, dk, fi, ro, hu, hr, gr, lv, ee, si). If a group already has
+        the search on any of its domains it is left alone; otherwise a copy is
+        created on that group's default domain (fr / cz). Filters (catalog,
+        brand, size, search text...) are copied verbatim; price bounds are
+        converted into the new region's local currency.
+
     /list_searches - View all your active searches and their IDs.
 
     /remove_search <id> - Stop monitoring a specific search.
@@ -107,7 +122,9 @@ Telegram Commands
 
     bot/: Contains Telegram logic, command handlers, and the notification engine.
 
-    parser/: Contains the Playwright scraper logic and the scheduling loop.
+    parser/: Contains the Playwright scraper logic, the scheduling loop, and parser/locales.py (per-domain locale & currency configuration). To support an additional Vinted country site, add an entry to DOMAIN_LOCALES.
+
+    bot/currency.py: Converts item prices to CZK via the free Frankfurter API.
 
     db/: Database connection management and Repository pattern implementation for Users, Searches, and Items.
 

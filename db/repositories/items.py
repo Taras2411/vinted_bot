@@ -4,23 +4,27 @@ async def add_item(
     db: Connection,
     vinted_id: int,
     title: str,
-    price: int,
+    price: str | None,
     url: str,
     image_url: str | None,
     brand: str | None,
     created_at: str | None,
+    price_amount: float | None = None,
+    currency: str | None = None,
 ):
     # Пытаемся вставить новую запись
     async with db.execute(
         """
         INSERT INTO items (
-            vinted_id, title, price, url, image_url, brand, created_at
+            vinted_id, title, price, price_amount, currency,
+            url, image_url, brand, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(vinted_id) DO NOTHING
         RETURNING id;
         """,
-        (vinted_id, title, price, url, image_url, brand, created_at),
+        (vinted_id, title, price, price_amount, currency,
+         url, image_url, brand, created_at),
     ) as cursor:
         row = await cursor.fetchone()
     

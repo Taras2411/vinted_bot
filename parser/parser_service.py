@@ -47,6 +47,8 @@ async def process_url_group(db: Connection, url: str, search_ids: list[int]):
                     vinted_id=item.vinted_id,
                     title=item.parsed_title.name if item.parsed_title else None,
                     price=item.parsed_title.price if item.parsed_title else None,
+                    price_amount=item.parsed_title.price_amount if item.parsed_title else None,
+                    currency=item.currency,
                     url=item.url,
                     image_url=item.image_src,
                     brand=item.parsed_title.brand if item.parsed_title else None,

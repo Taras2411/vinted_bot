@@ -6,8 +6,9 @@ env/
 # --- Project data ---
 data/
 
-# --- VS Code ---
+# --- IDEs ---
 .vscode/
+.idea/
 
 # --- Python cache / temp files ---
 __pycache__/
